@@ -1,122 +1,161 @@
 name: RDP
 
-
 on:
   workflow_dispatch:
 
-
 jobs:
-  secure-rdp:
+  rdp-session:
     runs-on: windows-latest
     timeout-minutes: 3600
 
-
     steps:
-      - name: Configure Core RDP Settings
+      - name: 🧰 تهيئة إعدادات RDP
+        shell: pwsh
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Write-Host "🔧 تفعيل Remote Desktop..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
+            -Name "fDenyTSConnections" -Value 0 -Force
+
+          Write-Host "🔐 تعطيل Network Level Authentication..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
+            -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+            -Name "SecurityLayer" -Value 0 -Force
 
+          Write-Host "🌐 فتح منفذ 3389 في الجدار الناري..."
+          netsh advfirewall firewall delete rule name="Allow-RDP" | Out-Null
+          netsh advfirewall firewall add rule name="Allow-RDP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-
-
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
+          Write-Host "✅ تم تفعيل RDP بنجاح."
 
-
-      - name: Create RDP User with Secure Password
+      - name: 👤 إنشاء مستخدم rdp آمن
+        shell: pwsh
         run: |
+          $UserName = "rdp"
+          Write-Host "🧑‍💻 إنشاء المستخدم '$UserName'..."
+
+          # إنشاء كلمة مرور قوية
           Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $chars = [char[]](33..126)
+          $password = -join (1..16 | ForEach-Object { $chars | Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
+
+          # حذف المستخدم القديم إذا وُجد
+          if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name $UserName
           }
 
+          # إنشاء المستخدم وإعطاؤه صلاحيات RDP + Admin
+          New-LocalUser -Name $UserName -Password $securePass -AccountNeverExpires -Description "Temporary RDP Account"
+          Add-LocalGroupMember -Group "Administrators" -Member $UserName
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName
 
-      - name: Install Tailscale
+          Write-Output "RDP_USER=$UserName" >> $env:GITHUB_ENV
+          Write-Output "RDP_PASS=$password" >> $env:GITHUB_ENV
+
+          Write-Host "✅ تم إنشاء المستخدم بنجاح."
+
+      - name: 🌍 تثبيت وتهيئة Tailscale
+        shell: pwsh
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $version = "1.82.0"
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-$version-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
 
+          Write-Host "⬇️ تحميل Tailscale..."
+          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
+          Remove-Item $installer -Force
 
-      - name: Establish Tailscale Connection
+          # استخدام اسم مضيف ثابت لتقليل تغيّر IP
+          $hostname = "gh-rdp-${{ github.run_id }}"
+          Write-Host "🔌 تشغيل Tailscale باسم المضيف: $hostname"
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=$hostname `
+            --accept-routes `
+            --accept-dns=false `
+            --reset
+
+          Write-Host "⏳ انتظار تعيين IP..."
+          $tries = 0
+          do {
+            Start-Sleep -Seconds 5
+            $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 | Select-Object -First 1
+            $tries++
+          } while (-not $ip -and $tries -lt 20)
+
+          if (-not $ip) {
+            Write-Error "❌ فشل الحصول على IP من Tailscale."
+            exit 1
+          }
+
+          Write-Output "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "✅ تم تعيين IP ثابت: $ip"
+
+      - name: 🔍 اختبار الاتصال
+        shell: pwsh
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
+          Write-Host "🧪 اختبار منفذ RDP (3389)..."
+          $test = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $test.TcpTestSucceeded) {
+            Write-Error "❌ فشل الاتصال بمنفذ RDP."
+            exit 1
           }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+          Write-Host "✅ الاتصال بالمنفذ 3389 ناجح."
 
-
-      - name: Maintain Connection
+      - name: 🖥️ عرض تفاصيل الجلسة
+        shell: pwsh
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+          Write-Host ""
+          Write-Host "==============================="
+          Write-Host "✅ جلسة RDP جاهزة!"
+          Write-Host "📡 IP Address : $env:TAILSCALE_IP"
+          Write-Host "👤 Username   : $env:RDP_USER"
+          Write-Host "🔑 Password   : $env:RDP_PASS"
+          Write-Host "==============================="
+          Write-Host ""
+
+      - name: ⏳ إبقاء الجلسة فعّالة
+        shell: pwsh
+        run: |
+          $sessionDuration = 3600 # ثانية (ساعة)
+          $elapsed = 0
+          while ($elapsed -lt $sessionDuration) {
+            Write-Host "[$(Get-Date)] 🟢 الجلسة فعّالة لمدة $elapsed ثانية..."
+            Start-Sleep -Seconds 300
+            $elapsed += 300
           }
+          Write-Host "🕓 انتهت الجلسة بعد ساعة."
+
+      - name: 📋 عرض المعلومات النهائية بنسخة قابلة للنسخ (Copy-friendly)
+        shell: pwsh
+        run: |
+          $copyBlock = @"
+RDP Connection:
+IP: $env:TAILSCALE_IP
+User: $env:RDP_USER
+Password: $env:RDP_PASS
+"@
+          Write-Host ""
+          Write-Host "----- COPY BELOW -----"
+          Write-Host $copyBlock
+          Write-Host "----- COPY ABOVE -----"
+          Write-Host ""
+          Write-Host "💡 انسخ هذه المعلومات واستخدمها للاتصال بـ RDP عبر Tailscale."
+
+      - name: 🧹 تنظيف بعد الإنهاء
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "🧹 تنظيف النظام..."
+          try {
+            & "$env:ProgramFiles\Tailscale\tailscale.exe" down | Out-Null
+          } catch {}
+          Stop-Service -Name TermService -Force
+          if (Get-LocalUser -Name "rdp" -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name "rdp"
+          }
+          Write-Host "✅ تم تنظيف النظام وإيقاف الجلسة بنجاح."
