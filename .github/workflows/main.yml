@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  rdp-session:
+  RDP-Session:
     runs-on: windows-latest
     timeout-minutes: 3600
 
@@ -12,48 +12,37 @@ jobs:
       - name: 🧰 تهيئة إعدادات RDP
         shell: pwsh
         run: |
-          Write-Host "🔧 تفعيل Remote Desktop..."
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
-
-          Write-Host "🔐 تعطيل Network Level Authentication..."
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "SecurityLayer" -Value 0 -Force
-
-          Write-Host "🌐 فتح منفذ 3389 في الجدار الناري..."
-          netsh advfirewall firewall delete rule name="Allow-RDP" | Out-Null
-          netsh advfirewall firewall add rule name="Allow-RDP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
-
+          Write-Host "🔧 تفعيل سطح المكتب البعيد ..."
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
+          Write-Host "🔐 تعطيل مصادقة مستوى الشبكة ..."
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-TCP" -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-TCP" -Name "SecurityLayer" -Value 0 -Force
+          Write-Host "🌐 فتح منفذ 3389 في الجدار الناري ..."
+          netsh advfirewall firewall delete rule name="Allow RDP" | Out-Null
+          netsh advfirewall firewall add rule name="Allow RDP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
           Restart-Service -Name TermService -Force
           Write-Host "✅ تم تفعيل RDP بنجاح."
 
-      - name: 👤 إنشاء مستخدم rdp آمن
+      - name: 👤 إنشاء مستخدم RDP آمن
         shell: pwsh
         run: |
           $UserName = "rdp"
-          Write-Host "🧑‍💻 إنشاء المستخدم '$UserName'..."
-
-          # إنشاء كلمة مرور قوية
+          Write-Host "🧑💻 إنشاء المستخدم $UserName ..."
           Add-Type -AssemblyName System.Security
           $chars = [char[]](33..126)
           $password = -join (1..16 | ForEach-Object { $chars | Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # حذف المستخدم القديم إذا وُجد
           if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
             Remove-LocalUser -Name $UserName
           }
 
-          # إنشاء المستخدم وإعطاؤه صلاحيات RDP + Admin
-          New-LocalUser -Name $UserName -Password $securePass -AccountNeverExpires -Description "Temporary RDP Account"
+          New-LocalUser -Name $UserName -Password $securePass -AccountNeverExpires -Description "حساب RDP مؤقت"
           Add-LocalGroupMember -Group "Administrators" -Member $UserName
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName
 
-          Write-Output "RDP_USER=$UserName" >> $env:GITHUB_ENV
-          Write-Output "RDP_PASS=$password" >> $env:GITHUB_ENV
-
+          echo "RDP_USER=$UserName" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
           Write-Host "✅ تم إنشاء المستخدم بنجاح."
 
       - name: 🌍 تثبيت وتهيئة Tailscale
@@ -62,16 +51,13 @@ jobs:
           $version = "1.82.0"
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-$version-amd64.msi"
           $installer = "$env:TEMP\tailscale.msi"
-
           Write-Host "⬇️ تحميل Tailscale..."
           Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
           Remove-Item $installer -Force
 
-          # استخدام اسم مضيف ثابت لتقليل تغيّر IP
           $hostname = "gh-rdp-${{ github.run_id }}"
           Write-Host "🔌 تشغيل Tailscale باسم المضيف: $hostname"
-
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
             --hostname=$hostname `
@@ -79,7 +65,7 @@ jobs:
             --accept-dns=false `
             --reset
 
-          Write-Host "⏳ انتظار تعيين IP..."
+          Write-Host "⏳ انتظار تعيين IP ..."
           $tries = 0
           do {
             Start-Sleep -Seconds 5
@@ -92,13 +78,13 @@ jobs:
             exit 1
           }
 
-          Write-Output "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
           Write-Host "✅ تم تعيين IP ثابت: $ip"
 
       - name: 🔍 اختبار الاتصال
         shell: pwsh
         run: |
-          Write-Host "🧪 اختبار منفذ RDP (3389)..."
+          Write-Host "🧪 اختبار منفذ RDP (3389) ..."
           $test = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $test.TcpTestSucceeded) {
             Write-Error "❌ فشل الاتصال بمنفذ RDP."
@@ -112,16 +98,16 @@ jobs:
           Write-Host ""
           Write-Host "==============================="
           Write-Host "✅ جلسة RDP جاهزة!"
-          Write-Host "📡 IP Address : $env:TAILSCALE_IP"
-          Write-Host "👤 Username   : $env:RDP_USER"
-          Write-Host "🔑 Password   : $env:RDP_PASS"
+          Write-Host "📡 عنوان IP: $env:TAILSCALE_IP"
+          Write-Host "👤 اسم المستخدم: $env:RDP_USER"
+          Write-Host "🔑 كلمة المرور: $env:RDP_PASS"
           Write-Host "==============================="
           Write-Host ""
 
       - name: ⏳ إبقاء الجلسة فعّالة
         shell: pwsh
         run: |
-          $sessionDuration = 3600 # ثانية (ساعة)
+          $sessionDuration = 3600
           $elapsed = 0
           while ($elapsed -lt $sessionDuration) {
             Write-Host "[$(Get-Date)] 🟢 الجلسة فعّالة لمدة $elapsed ثانية..."
@@ -130,19 +116,20 @@ jobs:
           }
           Write-Host "🕓 انتهت الجلسة بعد ساعة."
 
-      - name: 📋 عرض المعلومات النهائية بنسخة قابلة للنسخ (Copy-friendly)
+      - name: 📋 عرض المعلومات النهائية بنسخة قابلة للنسخ
         shell: pwsh
         run: |
           $copyBlock = @"
-RDP Connection:
+اتصال RDP:
 IP: $env:TAILSCALE_IP
-User: $env:RDP_USER
-Password: $env:RDP_PASS
+مستخدم: $env:RDP_USER
+كلمة المرور: $env:RDP_PASS
 "@
+
           Write-Host ""
-          Write-Host "----- COPY BELOW -----"
+          Write-Host "----- نسخة أدناه -----"
           Write-Host $copyBlock
-          Write-Host "----- COPY ABOVE -----"
+          Write-Host "----- نسخة أعلاه -----"
           Write-Host ""
           Write-Host "💡 انسخ هذه المعلومات واستخدمها للاتصال بـ RDP عبر Tailscale."
 
