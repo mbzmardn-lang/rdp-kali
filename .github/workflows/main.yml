@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  RDP-Session:
+  rdp-session:
     runs-on: windows-latest
     timeout-minutes: 3600
 
@@ -19,11 +19,11 @@ jobs:
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-TCP" -Name "SecurityLayer" -Value 0 -Force
           Write-Host "🌐 فتح منفذ 3389 في الجدار الناري ..."
           netsh advfirewall firewall delete rule name="Allow RDP" | Out-Null
-          netsh advfirewall firewall add rule name="Allow RDP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
+          netsh advfirewall firewall add rule name="Alministry-RDP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
           Restart-Service -Name TermService -Force
           Write-Host "✅ تم تفعيل RDP بنجاح."
 
-      - name: 👤 إنشاء مستخدم RDP آمن
+      - name: 👤 إنشاء مستخدم rdp آمن
         shell: pwsh
         run: |
           $UserName = "rdp"
@@ -32,17 +32,14 @@ jobs:
           $chars = [char[]](33..126)
           $password = -join (1..16 | ForEach-Object { $chars | Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
           if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
-            Remove-LocalUser -Name $UserName
+              Remove-LocalUser $UserName
           }
-
           New-LocalUser -Name $UserName -Password $securePass -AccountNeverExpires -Description "حساب RDP مؤقت"
           Add-LocalGroupMember -Group "Administrators" -Member $UserName
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName
-
-          echo "RDP_USER=$UserName" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          Write-Host "RDP_USER=$UserName" >> $env:GITHUB_ENV
+          Write-Host "RDP_PASS=$password" >> $env:GITHUB_ENV
           Write-Host "✅ تم إنشاء المستخدم بنجاح."
 
       - name: 🌍 تثبيت وتهيئة Tailscale
@@ -55,30 +52,26 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
           Remove-Item $installer -Force
-
           $hostname = "gh-rdp-${{ github.run_id }}"
           Write-Host "🔌 تشغيل Tailscale باسم المضيف: $hostname"
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --authkey="tskey-auth-kWmFMPyrjF11CNTRL-cRbqPRCaZWYGcwx1UgbEXYJnAZhs5AzSR" `
             --hostname=$hostname `
             --accept-routes `
             --accept-dns=false `
             --reset
-
           Write-Host "⏳ انتظار تعيين IP ..."
           $tries = 0
           do {
-            Start-Sleep -Seconds 5
-            $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 | Select-Object -First 1
-            $tries++
+              Start-Sleep -Seconds 5
+              $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 | Select-Object -First 1
+              $tries++
           } while (-not $ip -and $tries -lt 20)
-
           if (-not $ip) {
-            Write-Error "❌ فشل الحصول على IP من Tailscale."
-            exit 1
+              Write-Error "❌ فشل الحصول على IP من Tailscale."
+              exit 1
           }
-
-          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
           Write-Host "✅ تم تعيين IP ثابت: $ip"
 
       - name: 🔍 اختبار الاتصال
@@ -87,8 +80,8 @@ jobs:
           Write-Host "🧪 اختبار منفذ RDP (3389) ..."
           $test = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $test.TcpTestSucceeded) {
-            Write-Error "❌ فشل الاتصال بمنفذ RDP."
-            exit 1
+              Write-Error "❌ فشل الاتصال بمنفذ RDP."
+              exit 1
           }
           Write-Host "✅ الاتصال بالمنفذ 3389 ناجح."
 
@@ -98,7 +91,7 @@ jobs:
           Write-Host ""
           Write-Host "==============================="
           Write-Host "✅ جلسة RDP جاهزة!"
-          Write-Host "📡 عنوان IP: $env:TAILSCALE_IP"
+          Write-Host "📡 عنوان IP للمضيف: $env:TAILSCALE_IP"
           Write-Host "👤 اسم المستخدم: $env:RDP_USER"
           Write-Host "🔑 كلمة المرور: $env:RDP_PASS"
           Write-Host "==============================="
@@ -107,16 +100,16 @@ jobs:
       - name: ⏳ إبقاء الجلسة فعّالة
         shell: pwsh
         run: |
-          $sessionDuration = 3600
+          $sessionDuration = 3600 # ثانية (ساعة)
           $elapsed = 0
           while ($elapsed -lt $sessionDuration) {
-            Write-Host "[$(Get-Date)] 🟢 الجلسة فعّالة لمدة $elapsed ثانية..."
-            Start-Sleep -Seconds 300
-            $elapsed += 300
+              Write-Host "[$(Get-Date)] 🟢 الجلسة فعّالة لمدة $elapsed ثانية..."
+              Start-Sleep -Seconds 300
+              $elapsed += 300
           }
           Write-Host "🕓 انتهت الجلسة بعد ساعة."
 
-      - name: 📋 عرض المعلومات النهائية بنسخة قابلة للنسخ
+      - name: 📋 عرض المعلومات النهائية (سهل النسخ)
         shell: pwsh
         run: |
           $copyBlock = @"
@@ -125,7 +118,6 @@ IP: $env:TAILSCALE_IP
 مستخدم: $env:RDP_USER
 كلمة المرور: $env:RDP_PASS
 "@
-
           Write-Host ""
           Write-Host "----- نسخة أدناه -----"
           Write-Host $copyBlock
@@ -139,10 +131,10 @@ IP: $env:TAILSCALE_IP
         run: |
           Write-Host "🧹 تنظيف النظام..."
           try {
-            & "$env:ProgramFiles\Tailscale\tailscale.exe" down | Out-Null
+              & "$env:ProgramFiles\Tailscale\tailscale.exe" down | Out-Null
           } catch {}
           Stop-Service -Name TermService -Force
           if (Get-LocalUser -Name "rdp" -ErrorAction SilentlyContinue) {
-            Remove-LocalUser -Name "rdp"
+              Remove-LocalUser -Name "rdp"
           }
           Write-Host "✅ تم تنظيف النظام وإيقاف الجلسة بنجاح."
